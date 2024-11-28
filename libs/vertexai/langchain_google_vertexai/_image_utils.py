@@ -4,6 +4,7 @@ import base64
 import os
 import re
 from enum import Enum
+from functools import cached_property
 from typing import Dict, Optional, Union
 from urllib.parse import urlparse
 
@@ -43,6 +44,10 @@ class ImageBytesLoader:
         """
         self._project = project
 
+    @cached_property
+    def _storage_client(self):
+        return storage.Client(project=self._project)
+
     def load_bytes(self, image_string: str) -> bytes:
         """Routes to the correct loader based on the image_string.
 
@@ -50,7 +55,6 @@ class ImageBytesLoader:
             image_string: Can be either:
                     - Google cloud storage URI
                     - B64 Encoded image string
-                    - Local file path
                     - URL
 
         Returns:
@@ -70,12 +74,18 @@ class ImageBytesLoader:
             return self._bytes_from_url(image_string)
 
         if route == Route.LOCAL_FILE:
-            return self._bytes_from_file(image_string)
+            msg = (
+                "Support for loading local files has been removed for security "
+                "reasons. Please pass in images as one of: "
+                "Google Cloud Storage URI, b64 encoded image string (data:image/...), "
+                "or valid image url. "
+            )
+            raise ValueError(msg)
 
         raise ValueError(
             "Image string must be one of: Google Cloud Storage URI, "
-            "b64 encoded image string (data:image/...), valid image url, "
-            f"or existing local image file. Instead got '{image_string}'."
+            "b64 encoded image string (data:image/...), valid image url. "
+            f"Instead got '{image_string}'."
         )
 
     def load_part(self, image_string: str) -> Part:
@@ -104,7 +114,13 @@ class ImageBytesLoader:
             bytes_ = self._bytes_from_url(image_string)
 
         if route == Route.LOCAL_FILE:
-            bytes_ = self._bytes_from_file(image_string)
+            msg = (
+                "Support for loading local files has been removed for security "
+                "reasons. Please pass in images as one of: "
+                "Google Cloud Storage URI, b64 encoded image string (data:image/...), "
+                "or valid image url. "
+            )
+            raise ValueError(msg)
 
         mime_type = self._has_known_mimetype(image_string)
         if mime_type:
@@ -131,8 +147,8 @@ class ImageBytesLoader:
 
         raise ValueError(
             "Image string must be one of: Google Cloud Storage URI, "
-            "b64 encoded image string (data:image/...), valid image url, "
-            f"or existing local image file. Instead got '{image_string}'."
+            "b64 encoded image string (data:image/...), or valid image url. "
+            f"Instead got '{image_string}'."
         )
 
     def _bytes_from_b64(self, base64_image: str) -> bytes:
@@ -153,19 +169,6 @@ class ImageBytesLoader:
             return base64.b64decode(encoded_string)
 
         raise ValueError(f"Error in b64 encoded image. Must follow pattern: {pattern}")
-
-    def _bytes_from_file(self, file_path: str) -> bytes:
-        """Gets image bytes from a local file path.
-
-        Args:
-            file_path: Existing file path.
-
-        Returns:
-            Image bytes
-        """
-        with open(file_path, "rb") as image_file:
-            image_bytes = image_file.read()
-        return image_bytes
 
     def _bytes_from_url(self, url: str) -> bytes:
         """Gets image bytes from a public url.
@@ -200,7 +203,7 @@ class ImageBytesLoader:
             storage.Blob
         """
 
-        gcs_client = storage.Client(project=self._project)
+        gcs_client = self._storage_client
         blob = storage.Blob.from_string(gcs_uri, gcs_client)
         blob.reload(client=gcs_client)
         return blob

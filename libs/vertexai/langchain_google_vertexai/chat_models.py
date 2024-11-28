@@ -139,12 +139,13 @@ _allowed_params = [
     "top_p",
     "response_mime_type",
     "response_schema",
-    "temperature",
     "max_output_tokens",
     "presence_penalty",
     "frequency_penalty",
     "candidate_count",
     "seed",
+    "response_logprobs",
+    "logprobs",
 ]
 _allowed_params_prediction_service = ["request", "timeout", "metadata"]
 
@@ -935,6 +936,27 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
 
             {'input_tokens': 17, 'output_tokens': 7, 'total_tokens': 24}
 
+    Logprobs:
+        .. code-block:: python
+
+            llm = ChatVertexAI(model="gemini-1.5-flash-001", logprobs=True)
+            ai_msg = llm.invoke(messages)
+            ai_msg.response_metadata["logprobs_result"]
+
+        .. code-block:: python
+
+            [
+                {'token': 'J', 'logprob': -1.549651415189146e-06, 'top_logprobs': []},
+                {'token': "'", 'logprob': -1.549651415189146e-06, 'top_logprobs': []},
+                {'token': 'adore', 'logprob': 0.0, 'top_logprobs': []},
+                {'token': ' programmer', 'logprob': -1.1922384146600962e-07, 'top_logprobs': []},
+                {'token': '.', 'logprob': -4.827636439586058e-05, 'top_logprobs': []},
+                {'token': ' ', 'logprob': -0.018011733889579773, 'top_logprobs': []},
+                {'token': '\n', 'logprob': -0.0008687592926435173, 'top_logprobs': []}
+            ]
+
+
+
     Response metadata
         .. code-block:: python
 
@@ -1023,6 +1045,17 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
     cached_content: Optional[str] = None
     """ Optional. Use the model in cache mode. Only supported in Gemini 1.5 and later
         models. Must be a string containing the cache name (A sequence of numbers)
+    """
+
+    logprobs: Union[bool, int] = False
+    """Whether to return logprobs as part of AIMessage.response_metadata.
+    
+    If False, don't return logprobs. If True, return logprobs for top candidate. 
+    If int, return logprobs for top ``logprobs`` candidates.
+    
+    **NOTE**: As of 10.28.24 this is only supported for gemini-1.5-flash models.
+    
+    .. versionadded: 2.0.6
     """
 
     def __init__(self, *, model_name: Optional[str] = None, **kwargs: Any) -> None:
@@ -1193,12 +1226,22 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
         self,
         stop: Optional[List[str]] = None,
         stream: bool = False,
-        **kwargs,
+        *,
+        logprobs: int | bool = False,
+        **kwargs: Any,
     ) -> GenerationConfig:
         """Prepares GenerationConfig part of the request.
 
         https://cloud.google.com/vertex-ai/docs/reference/rpc/google.cloud.aiplatform.v1beta1#generationconfig
         """
+        if logprobs and isinstance(logprobs, bool):
+            kwargs["response_logprobs"] = logprobs
+        elif logprobs and isinstance(logprobs, int):
+            kwargs["response_logprobs"] = True
+            kwargs["logprobs"] = logprobs
+        else:
+            pass
+
         return GenerationConfig(
             **self._prepare_params(
                 stop=stop,
@@ -1249,6 +1292,7 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
         cached_content: Optional[str] = None,
         *,
         tool_choice: Optional[_ToolChoiceType] = None,
+        logprobs: Optional[Union[int, bool]] = None,
         **kwargs,
     ) -> GenerateContentRequest:
         system_instruction, contents = _parse_chat_history_gemini(messages)
@@ -1265,8 +1309,10 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
         else:
             pass
         safety_settings = self._safety_settings_gemini(safety_settings)
+        logprobs = logprobs if logprobs is not None else self.logprobs
+        logprobs = logprobs if isinstance(logprobs, (int, bool)) else False
         generation_config = self._generation_config_gemini(
-            stream=stream, stop=stop, **kwargs
+            stream=stream, stop=stop, logprobs=logprobs, **kwargs
         )
 
         if (self.cached_content is not None) or (cached_content is not None):
@@ -1833,8 +1879,11 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
         generations = []
         usage = proto.Message.to_dict(response.usage_metadata)
         lc_usage = _get_usage_metadata_gemini(usage)
+        logprobs = self.logprobs if isinstance(self.logprobs, (int, bool)) else False
         for candidate in response.candidates:
-            info = get_generation_info(candidate, is_gemini=True, usage_metadata=usage)
+            info = get_generation_info(
+                candidate, is_gemini=True, usage_metadata=usage, logprobs=logprobs
+            )
             message = _parse_response_candidate(candidate)
             if isinstance(message, AIMessage):
                 message.usage_metadata = lc_usage
